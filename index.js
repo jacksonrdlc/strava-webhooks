@@ -128,7 +128,7 @@ app.post('/webhook', async (req, res) => {
         // Make authenticated GET request to Strava API
         let activityData;
         try {
-            const activityResponse = await axios.get(`${stravaUrl}/${activityId}`);
+            const activityResponse = await axios.get(`${stravaUrl}/activities/${activityId}`);
             activityData = activityResponse.data;
             console.log('Activity details:', activityData);
         } catch (error) {
@@ -152,7 +152,7 @@ app.post('/webhook', async (req, res) => {
         // Fetch athlete stats
         let athleteStatsData;
         try {
-            const athleteStatsResponse = await axios.get(`${stravaUrl}/stats`);
+            const athleteStatsResponse = await axios.get(`${stravaUrl}/athlete/stats`);
             athleteStatsData = athleteStatsResponse.data;
             console.log('Athlete stats:', athleteStatsData);
         } catch (error) {
