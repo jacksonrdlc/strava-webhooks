@@ -76,15 +76,20 @@ async function refreshAccessToken(athleteId) {
         refreshToken = tokenResponse.data.refresh_token;
 
         // Update the stored tokens in runaway service
-        await axios.post(runawayRefeshTokensUrl, {
+        console.log('athleteId:', athleteId);
+
+        await axios.post(`${runawayUrl}/tokens`, {
             user_id: athleteId,
-            refresh_token: refreshToken
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            expires_at: tokenResponse.data.expires_at
         }).catch(error => {
             console.error('Failed to update runaway service:', error.message);
             // Continue execution even if update fails
         });
 
         console.log('Token refreshed successfully');
+        console.log('New access token:', accessToken);
         return accessToken;
     } catch (error) {
         console.error('Token refresh failed:', {
@@ -102,88 +107,93 @@ app.listen(process.env.PORT || 8080, () => console.log('webhook is listening'));
 app.post('/webhook', async (req, res) => {
     console.log("webhook event received!", req.query, req.body);
 
-    try {
-        // Extract the activity ID and athlete ID from the request body
-        const activityId = req.body.object_id;
-        const athleteId = '6819d431-f5c8-4ac6-b59b-67d2010e1e04';
-
-        console.log('Activity ID:', activityId);
-        console.log('Athlete ID:', athleteId);
-
-        if (!activityId) {
-            console.error('No activity ID found in webhook payload');
-            return res.status(400).send('No activity ID found');
-        }
-
-        if (!athleteId) {
-            console.error('No athlete ID found in webhook payload');
-            return res.status(400).send('No athlete ID found');
-        }
-
-        // Get fresh access token
-        const accessToken = await refreshAccessToken(athleteId);
-
-        console.log('Access token:', accessToken);
-
-        // Make authenticated GET request to Strava API
-        let activityData;
+    if (req.body.aspect_type == 'create') {
         try {
-            const activityResponse = await axios.get(`${stravaUrl}/activities/${activityId}`);
-            activityData = activityResponse.data;
-            console.log('Activity details:', activityData);
+            // Extract the activity ID and athlete ID from the request body
+            const activityId = req.body.object_id;
+            const athleteId = req.body.owner_id;;
+
+            console.log('Activity ID:', activityId);
+            console.log('Athlete ID:', athleteId);
+
+            if (!activityId) {
+                console.error('No activity ID found in webhook payload');
+                return res.status(400).send('No activity ID found');
+            }
+
+            if (!athleteId) {
+                console.error('No athlete ID found in webhook payload');
+                return res.status(400).send('No athlete ID found');
+            }
+
+            // Get fresh access token
+            const accessToken = await refreshAccessToken(athleteId);
+
+            console.log('Access token:', accessToken);
+
+            // Make authenticated GET request to Strava API
+            let activityData;
+            try {
+                const stravaUrlWithTokenandActivity = `${stravaUrl}/activities/${athleteId}/${activityId}?access_token=${accessToken}`;
+                console.log('Fetching activity from Strava:', stravaUrlWithTokenandActivity);
+
+                const activityResponse = await axios.get(`${stravaUrl}/activities/${athleteId}/${activityId}`);
+                activityData = activityResponse.data;
+                console.log('Activity details:', activityData);
+            } catch (error) {
+                console.error('Failed to fetch activity:', error.message);
+                handleError(error, res);
+                return;
+            }
+
+            // Fetch athlete details
+            let athleteData;
+            try {
+                const athleteResponse = await axios.get(`${stravaUrl}/athlete/${athleteId}`);
+                athleteData = athleteResponse.data;
+                console.log('Athlete details:', athleteData);
+            } catch (error) {
+                console.error('Failed to fetch athlete:', error.message);
+                handleError(error, res);
+                return;
+            }
+
+            // Fetch athlete stats
+            let athleteStatsData;
+            try {
+                const athleteStatsResponse = await axios.get(`${stravaUrl}/athlete/stats/${athleteId}`);
+                athleteStatsData = athleteStatsResponse.data;
+                console.log('Athlete stats:', athleteStatsData);
+            } catch (error) {
+                console.error('Failed to fetch athlete stats:', error.message);
+                handleError(error, res);
+                return;
+            }
+
+            // Make POST requests to Runaway API
+            try {
+                const transformedActivityData = transformActivityData(athleteId, activityData);
+                const transformedAthleteData = transformAthleteData(athleteId, athleteData);
+                const transformedAthleteStatsData = transformAthleteStatsData(athleteId, athleteStatsData);
+                const transformedMapData = transformMapData(activityData);
+
+                await Promise.all([
+                    axios.post(`${runawayUrl}/activities`, transformedActivityData),
+                    axios.post(`${runawayUrl}/athletes/${athleteId}`, transformedAthleteData),
+                    axios.post(`${runawayUrl}/athletes/${athleteId}/stats`, transformedAthleteStatsData),
+                    axios.post(`${runawayUrl}/maps`, transformedMapData)
+                ]);
+
+                res.status(200).send('EVENT_RECEIVED');
+            } catch (error) {
+                console.error('Failed to save data to Runaway:', error.message);
+                handleError(error, res);
+                return;
+            }
         } catch (error) {
-            console.error('Failed to fetch activity:', error.message);
+            console.error('Error processing webhook:', error);
             handleError(error, res);
-            return;
         }
-
-        // Fetch athlete details
-        let athleteData;
-        try {
-            const athleteResponse = await axios.get(`${stravaUrl}/athlete`);
-            athleteData = athleteResponse.data;
-            console.log('Athlete details:', athleteData);
-        } catch (error) {
-            console.error('Failed to fetch athlete:', error.message);
-            handleError(error, res);
-            return;
-        }
-
-        // Fetch athlete stats
-        let athleteStatsData;
-        try {
-            const athleteStatsResponse = await axios.get(`${stravaUrl}/athlete/stats`);
-            athleteStatsData = athleteStatsResponse.data;
-            console.log('Athlete stats:', athleteStatsData);
-        } catch (error) {
-            console.error('Failed to fetch athlete stats:', error.message);
-            handleError(error, res);
-            return;
-        }
-
-        const userId = '6819d431-f5c8-4ac6-b59b-67d2010e1e04';
-
-        // Make POST requests to Runaway API
-        try {
-            const transformedActivityData = transformActivityData(activityData);
-            const transformedAthleteData = transformAthleteData(athleteData);
-            const transformedAthleteStatsData = transformAthleteStatsData(athleteStatsData);
-
-            await Promise.all([
-                axios.post(`${runawayUrl}/activities`, transformedActivityData),
-                axios.post(`${runawayUrl}/athletes/${userId}`, transformedAthleteData),
-                axios.post(`${runawayUrl}/athletes/${userId}/stats`, transformedAthleteStatsData)
-            ]);
-
-            res.status(200).send('EVENT_RECEIVED');
-        } catch (error) {
-            console.error('Failed to save data to Runaway:', error.message);
-            handleError(error, res);
-            return;
-        }
-    } catch (error) {
-        console.error('Error processing webhook:', error);
-        handleError(error, res);
     }
 });
 
@@ -210,12 +220,12 @@ app.get('/webhook', (req, res) => {
 });
 
 // create a function that gets the full bodu of the strava activity by the activity id
-function transformActivityData(record) {
+function transformActivityData(athleteId, record) {
     const transformedData = {
         external_id: record.id?.toString(),
         upload_id: record.upload_id,
         name: record.name,
-        type: record.type,
+        type: record.type == 'WeightTraining' ? 'Weight Training' : record.type,
         detail: record.description,
         distance: record.distance,
         moving_time: record.moving_time,
@@ -248,7 +258,8 @@ function transformActivityData(record) {
         has_heart_rate: record.has_heartrate || false,
         average_heart_rate: record.average_heartrate,
         max_heart_rate: record.max_heartrate,
-        user_id: '6819d431-f5c8-4ac6-b59b-67d2010e1e04'
+        user_id: athleteId,
+        map_id: record.map.id
     };
 
     // Convert any undefined values to null
@@ -261,9 +272,9 @@ function transformActivityData(record) {
     return transformedData;
 }
 
-function transformAthleteData(athleteData) {
+function transformAthleteData(athleteId, athleteData) {
     const transformedData = {
-        user_id: '6819d431-f5c8-4ac6-b59b-67d2010e1e04',
+        user_id: athleteId,
         firstname: athleteData.firstname,
         lastname: athleteData.lastname,
         profile_medium: athleteData.profile_medium,
@@ -292,18 +303,34 @@ function transformAthleteData(athleteData) {
     return transformedData;
 }
 
-function transformAthleteStatsData(athleteStatsData) {
-    // Extract the relevant stats from recent_ride_totals
-    const stats = athleteStatsData.recent_ride_totals || {};
+function transformAthleteStatsData(athleteId, athleteStatsData) {
+    // Extract the relevant stats from all_run_totals
+    const stats = athleteStatsData.all_run_totals || {};
 
     const transformedData = {
-        user_id: '6819d431-f5c8-4ac6-b59b-67d2010e1e04',
+        user_id: athleteId,
         count: stats.count,
         distance: stats.distance,
         moving_time: stats.moving_time,
         elapsed_time: stats.elapsed_time,
         elevation_gain: stats.elevation_gain,
         achievement_count: stats.achievement_count
+    };
+
+    // Convert any undefined values to null
+    Object.keys(transformedData).forEach(key => {
+        if (transformedData[key] === undefined) {
+            transformedData[key] = null;
+        }
+    });
+
+    return transformedData;
+}
+
+function transformMapData(activityData) {
+    const transformedData = {
+        map_id: activityData.map.id,
+        summary_polyline: activityData.map.polyline
     };
 
     // Convert any undefined values to null
